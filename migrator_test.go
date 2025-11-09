@@ -24,8 +24,8 @@ import (
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
+	duckdb "github.com/hauntedness/duckdb"
 	"github.com/stretchr/testify/assert"
-	"github.com/vogo/duckdb/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )

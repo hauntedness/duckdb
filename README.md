@@ -1,10 +1,10 @@
 # GORM DuckDB Driver
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/vogo/duckdb.svg)](https://pkg.go.dev/github.com/vogo/duckdb)
-[![Go version](https://img.shields.io/github/go-mod/go-version/vogo/duckdb?logo=go)](https://github.com/vogo/duckdb)
-[![GitHub release](https://img.shields.io/github/v/release/vogo/duckdb)](https://github.com/vogo/duckdb/releases)
-[![Go Report Card](https://goreportcard.com/badge/github.com/vogo/duckdb)](https://goreportcard.com/report/github.com/vogo/duckdb)
-[![License](https://img.shields.io/github/license/vogo/duckdb?&color=blue)](https://github.com/vogo/duckdb/blob/main/LICENSE)
+[![Go Reference](https://pkg.go.dev/badge/github.com/hauntedness/duckdb/v2.svg)](https://pkg.go.dev/github.com/hauntedness/duckdb/v2)
+[![Go version](https://img.shields.io/github/go-mod/go-version/vogo/duckdb?logo=go)](https://github.com/hauntedness/duckdb/v2)
+[![GitHub release](https://img.shields.io/github/v/release/vogo/duckdb)](https://github.com/hauntedness/duckdb/v2/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/hauntedness/duckdb/v2)](https://goreportcard.com/report/github.com/hauntedness/duckdb/v2)
+[![License](https://img.shields.io/github/license/vogo/duckdb?&color=blue)](https://github.com/hauntedness/duckdb/v2/blob/main/LICENSE)
 
 
 ---
@@ -13,7 +13,7 @@
 
 ```go
 import (
-  "github.com/vogo/duckdb"
+  "github.com/hauntedness/duckdb/v2"
   "gorm.io/gorm"
 )
 
