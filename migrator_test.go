@@ -30,7 +30,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Define test structs
+// Define test structs.
 type User struct {
 	ID    uint   `gorm:"column:id;primaryKey;autoIncrement"`
 	Name  string `gorm:"column:name"`
@@ -49,9 +49,10 @@ type Post struct {
 	CreatedAt time.Time `gorm:"column:created_at;default:current_timestamp"`
 }
 
-// Test structs for deleted_at limitation verification
+// Test structs for deleted_at limitation verification.
 type UserWithGormModel struct {
 	gorm.Model
+
 	Name  string `gorm:"column:name"`
 	Email string `gorm:"column:email;varchar(255);unique"`
 }
@@ -69,6 +70,7 @@ func initDB(t *testing.T) *gorm.DB {
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	assert.NoError(t, err)
+
 	return db
 }
 
@@ -76,9 +78,11 @@ func closeDB(t *testing.T, db *gorm.DB) {
 	sqlDB, err := db.DB()
 	assert.NoError(t, err)
 	assert.NoError(t, sqlDB.Close())
+
 	if rmErr := os.Remove("test.db"); err != nil && !strings.Contains(rmErr.Error(), "no such file") {
 		t.Log("remove db error:", rmErr)
 	}
+
 	if rmErr := os.Remove("test.db.wal"); rmErr != nil && !strings.Contains(rmErr.Error(), "no such file") {
 		t.Log("remove wal error:", rmErr)
 	}
@@ -159,7 +163,7 @@ func TestDefaultValues(t *testing.T) {
 	assert.NotZero(t, post.CreatedAt)
 }
 
-// TestGormModelSoftDeleteLimitation verifies the deleted_at field limitation mentioned in README
+// TestGormModelSoftDeleteLimitation verifies the deleted_at field limitation mentioned in README.
 func TestGormModelSoftDeleteLimitation(t *testing.T) {
 	db := initDB(t)
 	defer closeDB(t, db)
@@ -205,12 +209,13 @@ func TestGormModelSoftDeleteLimitation(t *testing.T) {
 
 	// Verify the soft-deleted user still exists in database but is marked as deleted
 	var deletedUser UserWithGormModel
+
 	err = db.Unscoped().Where("email = ?", "john@example.com").First(&deletedUser).Error
 	assert.NoError(t, err)
 	assert.NotNil(t, deletedUser.DeletedAt)
 }
 
-// TestCustomFieldsWithoutDeletedAt verifies that custom structs work properly
+// TestCustomFieldsWithoutDeletedAt verifies that custom structs work properly.
 func TestCustomFieldsWithoutDeletedAt(t *testing.T) {
 	db := initDB(t)
 	defer closeDB(t, db)
@@ -234,6 +239,7 @@ func TestCustomFieldsWithoutDeletedAt(t *testing.T) {
 
 	// Verify user is actually deleted
 	var deletedUser UserWithCustomFields
+
 	err = db.Where("email = ?", "john@example.com").First(&deletedUser).Error
 	assert.Error(t, err) // Should return "record not found" error
 

@@ -21,6 +21,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 
@@ -82,9 +83,8 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 		return err
 	}
 
-	for k, v := range dialector.ClauseBuilders() {
-		db.ClauseBuilders[k] = v
-	}
+	maps.Copy(db.ClauseBuilders, dialector.ClauseBuilders())
+
 	return
 }
 
@@ -105,6 +105,7 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 					} else {
 						stmt.WriteQuoted(insert.Table)
 					}
+
 					return
 				}
 			}
@@ -114,10 +115,12 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 		"RETURNING": func(c clause.Clause, builder clause.Builder) {
 			if returning, ok := c.Expression.(clause.Returning); ok {
 				_, _ = builder.WriteString("RETURNING ")
+
 				for idx, column := range returning.Columns {
 					if idx > 0 {
 						_ = builder.WriteByte(',')
 					}
+
 					builder.WriteQuoted(column)
 				}
 			}
@@ -128,10 +131,12 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 				if limit.Limit != nil && *limit.Limit >= 0 {
 					lmt = *limit.Limit
 				}
+
 				if lmt >= 0 || limit.Offset > 0 {
 					_, _ = builder.WriteString("LIMIT ")
 					_, _ = builder.WriteString(strconv.Itoa(lmt))
 				}
+
 				if limit.Offset > 0 {
 					_, _ = builder.WriteString(" OFFSET ")
 					_, _ = builder.WriteString(strconv.Itoa(limit.Offset))
@@ -166,6 +171,7 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		if field.DataType == schema.Uint {
 			size++
 		}
+
 		if field.AutoIncrement {
 			switch {
 			case size <= 16:
@@ -190,18 +196,22 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 			if field.Scale > 0 {
 				return fmt.Sprintf("numeric(%d, %d)", field.Precision, field.Scale)
 			}
+
 			return fmt.Sprintf("numeric(%d)", field.Precision)
 		}
+
 		return "decimal"
 	case schema.String:
 		if field.Size > 0 {
 			return fmt.Sprintf("varchar(%d)", field.Size)
 		}
+
 		return "text"
 	case schema.Time:
 		if field.Precision > 0 {
 			return fmt.Sprintf("timestamptz(%d)", field.Precision)
 		}
+
 		return "timestamptz"
 	case schema.Bytes:
 		return "blob"
@@ -209,6 +219,7 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 		if field.Tag.Get("gorm") == "type:jsonb" {
 			return "json"
 		}
+
 		return dialector.getSchemaCustomType(field)
 	}
 }
@@ -221,6 +232,7 @@ func (dialector Dialector) getSchemaCustomType(field *schema.Field) string {
 		if field.GORMDataType == schema.Uint {
 			size++
 		}
+
 		switch {
 		case size <= 16:
 			sqlType = "smallint"
@@ -234,7 +246,7 @@ func (dialector Dialector) getSchemaCustomType(field *schema.Field) string {
 	return sqlType
 }
 
-func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v interface{}) {
+func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement, v any) {
 	_ = writer.WriteByte('?')
 }
 
@@ -260,12 +272,15 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 				continuousBacktick = 0
 				_, _ = writer.WriteString("")
 			}
+
 			_ = writer.WriteByte(v)
+
 			continue
 		default:
 			if shiftDelimiter-continuousBacktick <= 0 && !underQuoted {
 				_, _ = writer.WriteString("")
 				underQuoted = true
+
 				if selfQuoted = continuousBacktick > 0; selfQuoted {
 					continuousBacktick -= 1
 				}
@@ -277,16 +292,18 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 
 			_ = writer.WriteByte(v)
 		}
+
 		shiftDelimiter++
 	}
 
 	if continuousBacktick > 0 && !selfQuoted {
 		_, _ = writer.WriteString("")
 	}
+
 	_, _ = writer.WriteString("")
 }
 
-func (dialector Dialector) Explain(sql string, vars ...interface{}) string {
+func (dialector Dialector) Explain(sql string, vars ...any) string {
 	return logger.ExplainSQL(sql, nil, `"`, vars...)
 }
 

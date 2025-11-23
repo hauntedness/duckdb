@@ -30,6 +30,7 @@ import (
 )
 
 var ErrDuckDBNotSupported = errors.New("DuckDB are not supported this operation")
+var ErrInvalidAssert = errors.New("Invalid type assertion")
 
 var typeAliasMap = map[string][]string{
 	"int":                      {"integer"},
@@ -58,7 +59,7 @@ type Migrator struct {
 }
 
 type BuildIndexOptionsInterface interface {
-	BuildIndexOptions([]schema.IndexOption, *gorm.Statement) []interface{}
+	BuildIndexOptions([]schema.IndexOption, *gorm.Statement) []any
 }
 
 // Database
@@ -86,37 +87,35 @@ func (m Migrator) GetTypeAliases(databaseTypeName string) []string {
 
 // Tables
 
-func (m Migrator) createSequence(values ...interface{}) error {
+func (m Migrator) createSequence(values ...any) error {
 	for _, value := range m.ReorderModels(values, false) {
-		if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
+		err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
 			if stmt.Schema != nil {
 				// Check if schema has an id field
-				hasIDField := false
-				for _, dbName := range stmt.Schema.DBNames {
-					if dbName == "id" {
-						hasIDField = true
-						break
+				if dbName, ok := m.autoIncrementPrimaryKey(stmt, nil); ok {
+					sequenceName, err := m.idSequenceName(stmt, dbName)
+					if err != nil {
+						return err
 					}
-				}
 
-				if hasIDField {
-					tableName := m.CurrentTable(stmt).(clause.Table).Name
-					sequenceName := fmt.Sprintf("%s_id_seq", tableName)
-					if execErr := m.DB.Exec(
-						"CREATE SEQUENCE IF NOT EXISTS " + sequenceName + " START 1").Error; execErr != nil {
-						return execErr
+					csql := "CREATE SEQUENCE IF NOT EXISTS " + sequenceName + " START 1"
+					if err := m.DB.Exec(csql).Error; err != nil {
+						return err
 					}
 				}
 			}
+
 			return nil
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
-func (m Migrator) CreateTable(values ...interface{}) (err error) {
+func (m Migrator) CreateTable(values ...any) (err error) {
 	if err := m.createSequence(values...); err != nil {
 		return err
 	}
@@ -130,31 +129,34 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 
 			var (
 				createTableSQL          = "CREATE TABLE ? ("
-				values                  = []interface{}{m.CurrentTable(stmt)}
+				values                  = []any{m.CurrentTable(stmt)}
 				hasPrimaryKeyInDataType bool
 			)
 
+			var createTableSQLSb146 strings.Builder
 			for _, dbName := range stmt.Schema.DBNames {
 				field := stmt.Schema.FieldsByDBName[dbName]
 				if !field.IgnoreMigration {
-					if dbName == "id" {
-						tableName := m.CurrentTable(stmt).(clause.Table).Name
-						sequenceName := fmt.Sprintf("%s_id_seq", tableName)
+					if _, ok := m.autoIncrementPrimaryKey(stmt, &dbName); ok {
+						sequenceName, err := m.idSequenceName(stmt, dbName)
+						if err != nil {
+							return err
+						}
 						pk := fmt.Sprintf("? ? DEFAULT nextval('%s')", sequenceName)
-						createTableSQL += pk
-
+						createTableSQLSb146.WriteString(pk)
 					} else {
-						createTableSQL += "? ?"
+						createTableSQLSb146.WriteString("? ?")
 					}
 					hasPrimaryKeyInDataType = hasPrimaryKeyInDataType || strings.Contains(strings.ToUpper(m.DataTypeOf(field)), "PRIMARY KEY")
 					values = append(values, clause.Column{Name: dbName}, m.DB.Migrator().FullDataTypeOf(field))
-					createTableSQL += ","
+					createTableSQLSb146.WriteString(",")
 				}
 			}
+			createTableSQL += createTableSQLSb146.String()
 
 			if !hasPrimaryKeyInDataType && len(stmt.Schema.PrimaryFields) > 0 {
 				createTableSQL += "PRIMARY KEY ?,"
-				primaryKeys := make([]interface{}, 0, len(stmt.Schema.PrimaryFields))
+				primaryKeys := make([]any, 0, len(stmt.Schema.PrimaryFields))
 				for _, field := range stmt.Schema.PrimaryFields {
 					primaryKeys = append(primaryKeys, clause.Column{Name: field.DBName})
 				}
@@ -162,33 +164,36 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 				values = append(values, primaryKeys)
 			}
 
+			var createTableSQLSb174 strings.Builder
 			for _, idx := range stmt.Schema.ParseIndexes() {
 				if m.CreateIndexAfterCreateTable {
-					defer func(value interface{}, name string) {
+					defer func(value any, name string) {
 						if err == nil {
 							err = tx.Migrator().CreateIndex(value, name)
 						}
 					}(value, idx.Name)
 				} else {
 					if idx.Class != "" {
-						createTableSQL += idx.Class + " "
+						createTableSQLSb174.WriteString(idx.Class + " ")
 					}
-					createTableSQL += "INDEX ? ?"
+					createTableSQLSb174.WriteString("INDEX ? ?")
 
 					if idx.Comment != "" {
-						createTableSQL += fmt.Sprintf(" COMMENT '%s'", idx.Comment)
+						createTableSQLSb174.WriteString(fmt.Sprintf(" COMMENT '%s'", idx.Comment))
 					}
 
 					if idx.Option != "" {
-						createTableSQL += " " + idx.Option
+						createTableSQLSb174.WriteString(" " + idx.Option)
 					}
 
-					createTableSQL += ","
+					createTableSQLSb174.WriteString(",")
 					values = append(values, clause.Column{Name: idx.Name}, tx.Migrator().(BuildIndexOptionsInterface).BuildIndexOptions(idx.Fields, stmt))
 				}
 			}
+			createTableSQL += createTableSQLSb174.String()
 
 			if !m.DB.DisableForeignKeyConstraintWhenMigrating && !m.DB.IgnoreRelationshipsWhenMigrating {
+				var createTableSQLSb201 strings.Builder
 				for _, rel := range stmt.Schema.Relationships.Relations {
 					if rel.Field.IgnoreMigration {
 						continue
@@ -196,22 +201,27 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 					if constraint := rel.ParseConstraint(); constraint != nil {
 						if constraint.Schema == stmt.Schema {
 							sql, vars := constraint.Build()
-							createTableSQL += sql + ","
+							createTableSQLSb201.WriteString(sql + ",")
 							values = append(values, vars...)
 						}
 					}
 				}
+				createTableSQL += createTableSQLSb201.String()
 			}
 
+			var createTableSQLSb215 strings.Builder
 			for _, uni := range stmt.Schema.ParseUniqueConstraints() {
-				createTableSQL += "CONSTRAINT ? UNIQUE (?),"
+				createTableSQLSb215.WriteString("CONSTRAINT ? UNIQUE (?),")
 				values = append(values, clause.Column{Name: uni.Name}, clause.Expr{SQL: stmt.Quote(uni.Field.DBName)})
 			}
+			createTableSQL += createTableSQLSb215.String()
 
+			var createTableSQLSb220 strings.Builder
 			for _, chk := range stmt.Schema.ParseCheckConstraints() {
-				createTableSQL += "CONSTRAINT ? CHECK (?),"
+				createTableSQLSb220.WriteString("CONSTRAINT ? CHECK (?),")
 				values = append(values, clause.Column{Name: chk.Name}, clause.Expr{SQL: chk.Constraint})
 			}
+			createTableSQL += createTableSQLSb220.String()
 
 			createTableSQL = strings.TrimSuffix(createTableSQL, ",")
 
@@ -227,6 +237,7 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 			return err
 		}
 	}
+
 	for _, value := range m.ReorderModels(values, false) {
 		if err = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 			if stmt.Schema != nil {
@@ -244,14 +255,16 @@ func (m Migrator) CreateTable(values ...interface{}) (err error) {
 			}
 			return nil
 		}); err != nil {
-			return
+			return err
 		}
 	}
-	return
+
+	return err
 }
 
-func (m Migrator) DropTable(values ...interface{}) error {
+func (m Migrator) DropTable(values ...any) error {
 	values = m.ReorderModels(values, false)
+
 	tx := m.DB.Session(&gorm.Session{})
 	for i := len(values) - 1; i >= 0; i-- {
 		if err := m.RunWithValue(values[i], func(stmt *gorm.Statement) error {
@@ -260,10 +273,11 @@ func (m Migrator) DropTable(values ...interface{}) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
-func (m Migrator) CurrentSchema(stmt *gorm.Statement, table string) (interface{}, interface{}) {
+func (m Migrator) CurrentSchema(stmt *gorm.Statement, table string) (any, any) {
 	if strings.Contains(table, ".") {
 		if tables := strings.Split(table, `.`); len(tables) == 2 {
 			return tables[0], tables[1]
@@ -275,20 +289,23 @@ func (m Migrator) CurrentSchema(stmt *gorm.Statement, table string) (interface{}
 			return strings.TrimPrefix(tables[0], `"`), table
 		}
 	}
+
 	return clause.Expr{SQL: "CURRENT_SCHEMA()"}, table
 }
 
-func (m Migrator) HasTable(value interface{}) bool {
+func (m Migrator) HasTable(value any) bool {
 	var count int64
+
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		currentSchema, curTable := m.CurrentSchema(stmt, stmt.Table)
 		return m.DB.Raw("SELECT count(*) FROM information_schema.tables WHERE table_schema = ? AND table_name = ? AND table_type = ?", currentSchema, curTable, "BASE TABLE").Scan(&count).Error
 	})
+
 	return count > 0
 }
 
-func (m Migrator) RenameTable(oldName, newName interface{}) (err error) {
-	resolveTable := func(name interface{}) (result string, err error) {
+func (m Migrator) RenameTable(oldName, newName any) (err error) {
+	resolveTable := func(name any) (result string, err error) {
 		if v, ok := name.(string); ok {
 			result = v
 		} else {
@@ -297,21 +314,22 @@ func (m Migrator) RenameTable(oldName, newName interface{}) (err error) {
 				result = stmt.Table
 			}
 		}
+
 		return
 	}
 
 	var oldTable, newTable string
 
 	if oldTable, err = resolveTable(oldName); err != nil {
-		return
+		return err
 	}
 
 	if newTable, err = resolveTable(newName); err != nil {
-		return
+		return err
 	}
 
 	if !m.HasTable(oldTable) {
-		return
+		return err
 	}
 
 	return m.DB.Exec("RENAME TABLE ? TO ?",
@@ -325,13 +343,14 @@ func (m Migrator) GetTables() (tableList []string, err error) {
 	return tableList, m.DB.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = ?", currentSchema, "BASE TABLE").Scan(&tableList).Error
 }
 
-// Columns
-func (m Migrator) DropColumn(dst interface{}, field string) error {
+// Columns.
+func (m Migrator) DropColumn(dst any, field string) error {
 	if err := m.Migrator.DropColumn(dst, field); err != nil {
 		return err
 	}
 
 	m.resetPreparedStmts()
+
 	return nil
 }
 
@@ -345,7 +364,7 @@ func (m Migrator) resetPreparedStmts() {
 	}
 }
 
-func (m Migrator) MigrateColumn(value interface{}, field *schema.Field, columnType gorm.ColumnType) error {
+func (m Migrator) MigrateColumn(value any, field *schema.Field, columnType gorm.ColumnType) error {
 	// skip primary field and unique fields as DuckDB doesn't support altering column types with constraints
 	if !field.PrimaryKey && !field.Unique {
 		if err := m.Migrator.MigrateColumn(value, field, columnType); err != nil {
@@ -355,17 +374,20 @@ func (m Migrator) MigrateColumn(value interface{}, field *schema.Field, columnTy
 
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		var description sql.NullString
+
 		currentSchema, curTable := m.CurrentSchema(stmt, stmt.Table)
-		values := []interface{}{currentSchema, curTable, field.DBName, stmt.Table, currentSchema}
+		values := []any{currentSchema, curTable, field.DBName, stmt.Table, currentSchema}
 		checkSQL := "SELECT description FROM pg_catalog.pg_description "
 		checkSQL += "WHERE objsubid IN (SELECT ordinal_position FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?) "
 		checkSQL += "AND objoid IN (SELECT oid FROM pg_catalog.pg_class WHERE relname = ? AND relnamespace IN "
+
 		checkSQL += "(SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = ?))"
 		if err := m.DB.Raw(checkSQL, values...).Row().Scan(&description); err != nil {
 			return err
 		}
 
 		comment := strings.Trim(field.Comment, "'")
+
 		comment = strings.Trim(comment, `"`)
 		if field.Comment != "" && comment != description.String {
 			if err := m.DB.Exec(
@@ -380,12 +402,14 @@ func (m Migrator) MigrateColumn(value interface{}, field *schema.Field, columnTy
 				return err
 			}
 		}
+
 		return nil
 	})
 }
 
-func (m Migrator) HasColumn(value interface{}, field string) bool {
+func (m Migrator) HasColumn(value any, field string) bool {
 	var count int64
+
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		name := field
 		if stmt.Schema != nil {
@@ -395,6 +419,7 @@ func (m Migrator) HasColumn(value interface{}, field string) bool {
 		}
 
 		currentSchema, curTable := m.CurrentSchema(stmt, stmt.Table)
+
 		return m.DB.Raw(
 			"SELECT count(*) FROM INFORMATION_SCHEMA.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?",
 			currentSchema, curTable, name,
@@ -404,19 +429,20 @@ func (m Migrator) HasColumn(value interface{}, field string) bool {
 	return count > 0
 }
 
-func (m Migrator) RenameColumn(dst interface{}, oldName, field string) error {
+func (m Migrator) RenameColumn(dst any, oldName, field string) error {
 	if err := m.Migrator.RenameColumn(dst, oldName, field); err != nil {
 		return err
 	}
 
 	m.resetPreparedStmts()
+
 	return nil
 }
 
 // TODO: Implement below function.
 // func (m Migrator) ColumnTypes(value interface{}) (columnTypes []gorm.ColumnType, err error)
 
-// Views
+// Views.
 func (m Migrator) CreateView(name string, option gorm.ViewOption) error {
 	return ErrDuckDBNotSupported
 }
@@ -431,13 +457,15 @@ func (m Migrator) DropView(name string) error {
 // they slow down loading and updates but speed up certain queries.
 // https://duckdb.org/docs/guides/performance/schema.html#constraints
 
-func (m Migrator) HasConstraint(value interface{}, name string) bool {
+func (m Migrator) HasConstraint(value any, name string) bool {
 	var count int64
+
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		constraint, table := m.GuessConstraintInterfaceAndTable(stmt, name)
 		if constraint != nil {
 			name = constraint.GetName()
 		}
+
 		currentSchema, curTable := m.CurrentSchema(stmt, table)
 
 		return m.DB.Raw(
@@ -450,7 +478,7 @@ func (m Migrator) HasConstraint(value interface{}, name string) bool {
 }
 
 // https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
-func (m Migrator) DropConstraint(dst interface{}, name string) error {
+func (m Migrator) DropConstraint(dst any, name string) error {
 	return ErrDuckDBNotSupported
 }
 
@@ -459,17 +487,18 @@ func (m Migrator) DropConstraint(dst interface{}, name string) error {
 
 // Indexes
 
-func (m Migrator) CreateIndex(value interface{}, name string) error {
+func (m Migrator) CreateIndex(value any, name string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {
 			if idx := stmt.Schema.LookIndex(name); idx != nil {
 				opts := m.BuildIndexOptions(idx.Fields, stmt)
-				values := []interface{}{clause.Column{Name: idx.Name}, m.CurrentTable(stmt), opts}
+				values := []any{clause.Column{Name: idx.Name}, m.CurrentTable(stmt), opts}
 
 				createIndexSQL := "CREATE "
 				if idx.Class != "" {
 					createIndexSQL += idx.Class + " "
 				}
+
 				createIndexSQL += "INDEX IF NOT EXISTS ? ON ?"
 
 				if idx.Type != "" {
@@ -486,6 +515,7 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 				if !m.HasIndex(value, name) {
 					return fmt.Errorf("failed to create index with name %v", name)
 				}
+
 				return nil
 			}
 		}
@@ -494,7 +524,7 @@ func (m Migrator) CreateIndex(value interface{}, name string) error {
 	})
 }
 
-func (m Migrator) DropIndex(value interface{}, name string) error {
+func (m Migrator) DropIndex(value any, name string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {
 			if idx := stmt.Schema.LookIndex(name); idx != nil {
@@ -506,23 +536,52 @@ func (m Migrator) DropIndex(value interface{}, name string) error {
 	})
 }
 
-func (m Migrator) RenameIndex(dst interface{}, oldName, newName string) error {
+func (m Migrator) RenameIndex(dst any, oldName, newName string) error {
 	return ErrDuckDBNotSupported
 }
 
-func (m Migrator) HasIndex(value interface{}, name string) bool {
+func (m Migrator) HasIndex(value any, name string) bool {
 	var count int64
+
 	_ = m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {
 			if idx := stmt.Schema.LookIndex(name); idx != nil {
 				name = idx.Name
 			}
 		}
+
 		currentSchema, curTable := m.CurrentSchema(stmt, stmt.Table)
+
 		return m.DB.Raw(
 			"SELECT count(*) FROM pg_indexes WHERE tablename = ? AND indexname = ? AND schemaname = ?", curTable, name, currentSchema,
 		).Scan(&count).Error
 	})
 
 	return count > 0
+}
+
+func (m Migrator) autoIncrementPrimaryKey(stmt *gorm.Statement, dbname *string) (string, bool) {
+	for _, field := range stmt.Schema.Fields {
+		if dbname != nil && *dbname != field.DBName {
+			return "", false
+		}
+
+		if field.AutoIncrement && field.PrimaryKey {
+			return field.DBName, true
+		}
+	}
+
+	return "", false
+}
+
+func (m Migrator) idSequenceName(stmt *gorm.Statement, dbName string) (string, error) {
+	currentTable, ok := m.CurrentTable(stmt).(clause.Table)
+	if !ok {
+		return "", ErrInvalidAssert
+	}
+
+	tableName := currentTable.Name
+	sequenceName := tableName + "_" + dbName + "_seq"
+
+	return sequenceName, nil
 }
