@@ -22,6 +22,7 @@ import (
 	"database/sql"
 	"fmt"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -64,7 +65,7 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 	}
 
 	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{
-		CreateClauses: []string{"INSERT", "VALUES", "RETURNING"},
+		CreateClauses: []string{"INSERT", "VALUES", "ON CONFLICT", "RETURNING"},
 		UpdateClauses: []string{"UPDATE", "SET", "WHERE", "RETURNING"},
 		DeleteClauses: []string{"DELETE", "FROM", "WHERE", "RETURNING"},
 	})
@@ -140,6 +141,70 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 				if limit.Offset > 0 {
 					_, _ = builder.WriteString(" OFFSET ")
 					_, _ = builder.WriteString(strconv.Itoa(limit.Offset))
+				}
+			}
+		},
+		"ON CONFLICT_BACKUP": func(c clause.Clause, builder clause.Builder) {
+			if onConflict, ok := c.Expression.(clause.OnConflict); ok {
+				// for now only support (DO NOTHING or DO UPDATE ALL)
+				if onConflict.DoNothing {
+					if len(onConflict.Columns) > 0 {
+						_, _ = builder.WriteString("ON CONFLICT")
+						_ = builder.WriteByte(' ')
+						_ = builder.WriteByte('(')
+
+						for idx, column := range onConflict.Columns {
+							if idx > 0 {
+								_ = builder.WriteByte(',')
+							}
+
+							builder.WriteQuoted(column)
+						}
+
+						_ = builder.WriteByte(')')
+						_, _ = builder.WriteString(" DO NOTHING")
+					}
+				} else if onConflict.UpdateAll {
+					stmt, ok := builder.(*gorm.Statement)
+					if ok && stmt.Schema != nil {
+						if len(onConflict.Columns) > 0 {
+							_, _ = builder.WriteString("ON CONFLICT")
+							_ = builder.WriteByte(' ')
+							_ = builder.WriteByte('(')
+
+							for idx, column := range onConflict.Columns {
+								if idx > 0 {
+									_ = builder.WriteByte(',')
+								}
+
+								builder.WriteQuoted(column)
+							}
+
+							_ = builder.WriteByte(')')
+
+							if slices.ContainsFunc(stmt.Schema.Fields, containUpdatable) {
+								_, _ = builder.WriteString(" DO UPDATE SET ")
+								written := false
+
+								for _, field := range stmt.Schema.Fields {
+									if !field.PrimaryKey && field.Updatable {
+										if written {
+											_ = builder.WriteByte(',')
+										}
+
+										builder.WriteQuoted(clause.Column{Name: field.DBName})
+										_ = builder.WriteByte('=')
+										_, _ = builder.WriteString("EXCLUDED.")
+										builder.WriteQuoted(clause.Column{Name: field.DBName})
+
+										written = true
+									}
+								}
+							} else {
+								_, _ = builder.WriteString(" DO NOTHING")
+							}
+						}
+					}
 				}
 			}
 		},
@@ -315,4 +380,8 @@ func (dialectopr Dialector) SavePoint(tx *gorm.DB, name string) error {
 func (dialectopr Dialector) RollbackTo(tx *gorm.DB, name string) error {
 	tx.Exec("ROLLBACK TO SAVEPOINT " + name)
 	return nil
+}
+
+func containUpdatable(field *schema.Field) bool {
+	return !field.PrimaryKey && field.Updatable
 }
