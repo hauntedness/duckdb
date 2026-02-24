@@ -18,14 +18,13 @@
 package duckdb_test
 
 import (
+	"log"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	duckdb "github.com/hauntedness/duckdb"
-	"github.com/stretchr/testify/assert"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -69,22 +68,27 @@ func initDB(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(duckdb.Open("test.db"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	return db
 }
 
 func closeDB(t *testing.T, db *gorm.DB) {
 	sqlDB, err := db.DB()
-	assert.NoError(t, err)
-	assert.NoError(t, sqlDB.Close())
-
-	if rmErr := os.Remove("test.db"); err != nil && !strings.Contains(rmErr.Error(), "no such file") {
-		t.Log("remove db error:", rmErr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
 	}
 
-	if rmErr := os.Remove("test.db.wal"); rmErr != nil && !strings.Contains(rmErr.Error(), "no such file") {
-		t.Log("remove wal error:", rmErr)
+	if err := os.Remove("test.db"); err != nil {
+		log.Printf("remove db error: %v", err)
+	}
+	if err := os.Remove("test.db.wal"); err != nil {
+		log.Printf("remove wal error: %v", err)
 	}
 }
 
@@ -94,12 +98,18 @@ func TestMigratorBasicSchema(t *testing.T) {
 	defer closeDB(t, db)
 
 	// Migrate User table
-	err := db.AutoMigrate(&Product{})
-	assert.NoError(t, err)
+	if err := db.AutoMigrate(&Product{}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Check if table exists
-	assert.True(t, db.Migrator().HasTable(&Product{}))
-	assert.True(t, db.Migrator().HasColumn(&Product{}, "Price"))
+	if !db.Migrator().HasTable(&Product{}) {
+		t.Fatal("table should exist")
+	}
+
+	if !db.Migrator().HasColumn(&Product{}, "Price") {
+		t.Fatal("table should have column Price")
+	}
 }
 
 // TestMigratorDropTable verifies dropping a table.
@@ -107,26 +117,42 @@ func TestMigratorDropTable(t *testing.T) {
 	db := initDB(t)
 	defer closeDB(t, db)
 
-	_ = db.AutoMigrate(&User{})
-	assert.True(t, db.Migrator().HasTable(&User{}))
+	if err := db.AutoMigrate(&User{}); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasTable(&User{}) {
+		t.Fatal("table should exist")
+	}
 
 	// Drop table and verify
-	_ = db.Migrator().DropTable(&User{})
-	assert.False(t, db.Migrator().HasTable(&User{}))
+	if err := db.Migrator().DropTable(&User{}); err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasTable(&User{}) {
+		t.Fatal("table should not exist")
+	}
 }
 
 func TestAutoIncrement(t *testing.T) {
 	db := initDB(t)
 	defer closeDB(t, db)
 
-	_ = db.AutoMigrate(&User{})
-	assert.True(t, db.Migrator().HasColumn(&User{}, "Email"))
+	if err := db.AutoMigrate(&User{}); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasColumn(&User{}, "Email") {
+		t.Fatal("table should have column Email")
+	}
 
 	// Create first user with unique email for this test
 	user1 := User{Name: "User1", Email: "autoincrement@example.com"}
 	result1 := db.Create(&user1)
-	assert.NoError(t, result1.Error)
-	assert.Equal(t, uint(1), user1.ID)
+	if err := result1.Error; err != nil {
+		t.Fatal(err)
+	}
+	if user1.ID != 1 {
+		t.Fatal("invalid user1.ID", user1.ID)
+	}
 }
 
 // TestUniqueConstraint tests that unique constraints are enforced.
@@ -134,18 +160,26 @@ func TestUniqueConstraint(t *testing.T) {
 	db := initDB(t)
 	defer closeDB(t, db)
 
-	_ = db.AutoMigrate(&User{})
-	assert.True(t, db.Migrator().HasColumn(&User{}, "Email"))
+	if err := db.AutoMigrate(&User{}); err != nil {
+		t.Fatal(err)
+	}
+	if !db.Migrator().HasColumn(&User{}, "Email") {
+		t.Fatal("table should have column Email")
+	}
 
 	// Create first user
 	user1 := User{Name: "User1", Email: "user@example.com"}
 	result1 := db.Create(&user1)
-	assert.NoError(t, result1.Error)
+	if result1.Error != nil {
+		t.Fatalf("failed to create user1: %v", result1.Error)
+	}
 
 	// Attempt to create a second user with the same email
 	user2 := User{Name: "User2", Email: "user@example.com"}
 	result2 := db.Create(&user2)
-	assert.Error(t, result2.Error, "Expected unique constraint violation")
+	if result2.Error == nil {
+		t.Error("Expected unique constraint violation")
+	}
 }
 
 // TestDefaultValues verifies that default values are set correctly.
@@ -160,7 +194,9 @@ func TestDefaultValues(t *testing.T) {
 	db.Create(&post)
 
 	// Verify CreatedAt has a value (defaulted to the current timestamp)
-	assert.NotZero(t, post.CreatedAt)
+	if post.CreatedAt.IsZero() {
+		t.Error("Expected CreatedAt to be set")
+	}
 }
 
 // TestGormModelSoftDeleteLimitation verifies the deleted_at field limitation mentioned in README.
@@ -170,7 +206,9 @@ func TestGormModelSoftDeleteLimitation(t *testing.T) {
 
 	// Migrate table with gorm.Model (includes deleted_at)
 	err := db.AutoMigrate(&UserWithGormModel{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("AutoMigrate failed: %v", err)
+	}
 
 	// Create first user
 	user1 := UserWithGormModel{
@@ -178,8 +216,12 @@ func TestGormModelSoftDeleteLimitation(t *testing.T) {
 		Email: "john@example.com",
 	}
 	err = db.Create(&user1).Error
-	assert.NoError(t, err)
-	assert.NotZero(t, user1.ID)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if user1.ID == 0 {
+		t.Error("Expected ID to be set")
+	}
 
 	// Soft delete the user (this sets deleted_at instead of actually deleting)
 	err = db.Delete(&user1).Error
@@ -211,8 +253,12 @@ func TestGormModelSoftDeleteLimitation(t *testing.T) {
 	var deletedUser UserWithGormModel
 
 	err = db.Unscoped().Where("email = ?", "john@example.com").First(&deletedUser).Error
-	assert.NoError(t, err)
-	assert.NotNil(t, deletedUser.DeletedAt)
+	if err != nil {
+		t.Fatalf("Failed to find deleted user: %v", err)
+	}
+	if !deletedUser.DeletedAt.Valid {
+		t.Error("Expected DeletedAt to be set")
+	}
 }
 
 // TestCustomFieldsWithoutDeletedAt verifies that custom structs work properly.
@@ -222,7 +268,9 @@ func TestCustomFieldsWithoutDeletedAt(t *testing.T) {
 
 	// Migrate table with custom fields (no deleted_at)
 	err := db.AutoMigrate(&UserWithCustomFields{})
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("AutoMigrate failed: %v", err)
+	}
 
 	// Create first user
 	user1 := UserWithCustomFields{
@@ -230,18 +278,26 @@ func TestCustomFieldsWithoutDeletedAt(t *testing.T) {
 		Email: "john@example.com",
 	}
 	err = db.Create(&user1).Error
-	assert.NoError(t, err)
-	assert.NotZero(t, user1.ID)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if user1.ID == 0 {
+		t.Error("Expected ID to be set")
+	}
 
 	// Hard delete the user (actually removes from database)
 	err = db.Delete(&user1).Error
-	assert.NoError(t, err)
+	if err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
 
 	// Verify user is actually deleted
 	var deletedUser UserWithCustomFields
 
 	err = db.Where("email = ?", "john@example.com").First(&deletedUser).Error
-	assert.Error(t, err) // Should return "record not found" error
+	if err == nil {
+		t.Error("Expected error record not found")
+	}
 
 	// Create another user with the same email - this should work fine
 	user2 := UserWithCustomFields{
@@ -249,8 +305,12 @@ func TestCustomFieldsWithoutDeletedAt(t *testing.T) {
 		Email: "john@example.com", // Same email as deleted user
 	}
 	err = db.Create(&user2).Error
-	assert.NoError(t, err)
-	assert.NotZero(t, user2.ID)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if user2.ID == 0 {
+		t.Error("Expected ID to be set")
+	}
 
 	// This demonstrates that without deleted_at, there are no constraint issues
 	t.Logf("Successfully created user with same email after hard delete")
