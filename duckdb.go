@@ -21,12 +21,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	"github.com/duckdb/duckdb-go/v2"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
@@ -34,6 +34,9 @@ import (
 	"gorm.io/gorm/migrator"
 	"gorm.io/gorm/schema"
 )
+
+// import duckdb explicitly
+var _ duckdb.Driver
 
 const DriverName = "duckdb"
 
@@ -81,6 +84,11 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 
 	var version string
 	if err := db.ConnPool.QueryRowContext(context.Background(), "SELECT version()").Scan(&version); err != nil {
+		if dialector.Conn == nil && db.ConnPool != nil {
+			if closer, ok := db.ConnPool.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
 		return err
 	}
 
@@ -117,6 +125,11 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 			if returning, ok := c.Expression.(clause.Returning); ok {
 				_, _ = builder.WriteString("RETURNING ")
 
+				if len(returning.Columns) == 0 {
+					_ = builder.WriteByte('*')
+					return
+				}
+
 				for idx, column := range returning.Columns {
 					if idx > 0 {
 						_ = builder.WriteByte(',')
@@ -128,83 +141,17 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 		},
 		"LIMIT": func(c clause.Clause, builder clause.Builder) {
 			if limit, ok := c.Expression.(clause.Limit); ok {
-				lmt := -1
 				if limit.Limit != nil && *limit.Limit >= 0 {
-					lmt = *limit.Limit
-				}
-
-				if lmt >= 0 || limit.Offset > 0 {
 					_, _ = builder.WriteString("LIMIT ")
-					_, _ = builder.WriteString(strconv.Itoa(lmt))
+					_, _ = builder.WriteString(strconv.Itoa(*limit.Limit))
 				}
 
 				if limit.Offset > 0 {
-					_, _ = builder.WriteString(" OFFSET ")
-					_, _ = builder.WriteString(strconv.Itoa(limit.Offset))
-				}
-			}
-		},
-		"ON CONFLICT_BACKUP": func(c clause.Clause, builder clause.Builder) {
-			if onConflict, ok := c.Expression.(clause.OnConflict); ok {
-				// for now only support (DO NOTHING or DO UPDATE ALL)
-				if onConflict.DoNothing {
-					if len(onConflict.Columns) > 0 {
-						_, _ = builder.WriteString("ON CONFLICT")
+					if limit.Limit != nil && *limit.Limit >= 0 {
 						_ = builder.WriteByte(' ')
-						_ = builder.WriteByte('(')
-
-						for idx, column := range onConflict.Columns {
-							if idx > 0 {
-								_ = builder.WriteByte(',')
-							}
-
-							builder.WriteQuoted(column)
-						}
-
-						_ = builder.WriteByte(')')
-						_, _ = builder.WriteString(" DO NOTHING")
 					}
-				} else if onConflict.UpdateAll {
-					stmt, ok := builder.(*gorm.Statement)
-					if ok && stmt.Schema != nil {
-						if len(onConflict.Columns) > 0 {
-							_, _ = builder.WriteString("ON CONFLICT")
-							_ = builder.WriteByte(' ')
-							_ = builder.WriteByte('(')
-
-							for idx, column := range onConflict.Columns {
-								if idx > 0 {
-									_ = builder.WriteByte(',')
-								}
-
-								builder.WriteQuoted(column)
-							}
-
-							_ = builder.WriteByte(')')
-
-							if slices.ContainsFunc(stmt.Schema.Fields, containUpdatable) {
-								_, _ = builder.WriteString(" DO UPDATE SET ")
-								written := false
-
-								for _, field := range stmt.Schema.Fields {
-									if !field.PrimaryKey && field.Updatable {
-										if written {
-											_ = builder.WriteByte(',')
-										}
-
-										builder.WriteQuoted(clause.Column{Name: field.DBName})
-										_ = builder.WriteByte('=')
-										_, _ = builder.WriteString("EXCLUDED.")
-										builder.WriteQuoted(clause.Column{Name: field.DBName})
-
-										written = true
-									}
-								}
-							} else {
-								_, _ = builder.WriteString(" DO NOTHING")
-							}
-						}
-					}
+					_, _ = builder.WriteString("OFFSET ")
+					_, _ = builder.WriteString(strconv.Itoa(limit.Offset))
 				}
 			}
 		},
@@ -220,41 +167,48 @@ func (dialector Dialector) SupportReturning() bool {
 }
 
 func (dialector Dialector) Migrator(db *gorm.DB) gorm.Migrator {
-	return Migrator{migrator.Migrator{Config: migrator.Config{
+	return Migrator{migrator.Migrator{
 		DB:                          db,
 		Dialector:                   dialector,
-		CreateIndexAfterCreateTable: true,
-	}}}
+		CreateIndexAfterCreateTable: true}}
 }
 
 func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 	switch field.DataType {
 	case schema.Bool:
 		return "boolean"
-	case schema.Int, schema.Uint:
-		size := field.Size
-		if field.DataType == schema.Uint {
-			size++
+	case schema.Int:
+		switch {
+		case field.Size <= 8:
+			return "tinyint"
+		case field.Size <= 16:
+			return "smallint"
+		case field.Size <= 32:
+			return "integer"
+		default:
+			return "bigint"
 		}
-
+	case schema.Uint:
 		if field.AutoIncrement {
 			switch {
-			case size <= 16:
+			case field.Size <= 16:
 				return "smallint"
-			case size <= 32:
+			case field.Size <= 32:
 				return "integer"
 			default:
 				return "bigint"
 			}
-		} else {
-			switch {
-			case size <= 16:
-				return "smallint"
-			case size <= 32:
-				return "integer"
-			default:
-				return "bigint"
-			}
+		}
+
+		switch {
+		case field.Size <= 8:
+			return "utinyint"
+		case field.Size <= 16:
+			return "usmallint"
+		case field.Size <= 32:
+			return "uinteger"
+		default:
+			return "ubigint"
 		}
 	case schema.Float:
 		if field.Precision > 0 {
@@ -273,10 +227,6 @@ func (dialector Dialector) DataTypeOf(field *schema.Field) string {
 
 		return "text"
 	case schema.Time:
-		if field.Precision > 0 {
-			return fmt.Sprintf("timestamptz(%d)", field.Precision)
-		}
-
 		return "timestamptz"
 	case schema.Bytes:
 		return "blob"
@@ -318,41 +268,41 @@ func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement,
 func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 	var (
 		underQuoted, selfQuoted bool
-		continuousBacktick      int8
+		continuousQuotes        int8
 		shiftDelimiter          int8
 	)
 
 	for _, v := range []byte(str) {
 		switch v {
-		case '`':
-			continuousBacktick++
-			if continuousBacktick == 2 {
-				_, _ = writer.WriteString("")
-				continuousBacktick = 0
+		case '"', '`':
+			continuousQuotes++
+			if continuousQuotes == 2 {
+				_ = writer.WriteByte('"')
+				continuousQuotes = 0
 			}
 		case '.':
-			if continuousBacktick > 0 || !selfQuoted {
+			if continuousQuotes > 0 || !selfQuoted {
 				shiftDelimiter = 0
 				underQuoted = false
-				continuousBacktick = 0
-				_, _ = writer.WriteString("")
+				continuousQuotes = 0
+				_ = writer.WriteByte('"')
 			}
 
 			_ = writer.WriteByte(v)
 
 			continue
 		default:
-			if shiftDelimiter-continuousBacktick <= 0 && !underQuoted {
-				_, _ = writer.WriteString("")
+			if shiftDelimiter-continuousQuotes <= 0 && !underQuoted {
+				_ = writer.WriteByte('"')
 				underQuoted = true
 
-				if selfQuoted = continuousBacktick > 0; selfQuoted {
-					continuousBacktick -= 1
+				if selfQuoted = continuousQuotes > 0; selfQuoted {
+					continuousQuotes -= 1
 				}
 			}
 
-			for ; continuousBacktick > 0; continuousBacktick -= 1 {
-				_, _ = writer.WriteString("")
+			for ; continuousQuotes > 0; continuousQuotes -= 1 {
+				_ = writer.WriteByte('"')
 			}
 
 			_ = writer.WriteByte(v)
@@ -361,27 +311,13 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 		shiftDelimiter++
 	}
 
-	if continuousBacktick > 0 && !selfQuoted {
-		_, _ = writer.WriteString("")
+	if continuousQuotes > 0 && !selfQuoted {
+		_ = writer.WriteByte('"')
 	}
 
-	_, _ = writer.WriteString("")
+	_ = writer.WriteByte('"')
 }
 
 func (dialector Dialector) Explain(sql string, vars ...any) string {
-	return logger.ExplainSQL(sql, nil, `"`, vars...)
-}
-
-func (dialectopr Dialector) SavePoint(tx *gorm.DB, name string) error {
-	tx.Exec("SAVEPOINT " + name)
-	return nil
-}
-
-func (dialectopr Dialector) RollbackTo(tx *gorm.DB, name string) error {
-	tx.Exec("ROLLBACK TO SAVEPOINT " + name)
-	return nil
-}
-
-func containUpdatable(field *schema.Field) bool {
-	return !field.PrimaryKey && field.Updatable
+	return logger.ExplainSQL(sql, nil, `'`, vars...)
 }

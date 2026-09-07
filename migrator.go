@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"gorm.io/gorm"
@@ -134,6 +135,7 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 			)
 
 			var createTableSQLSb146 strings.Builder
+
 			for _, dbName := range stmt.Schema.DBNames {
 				field := stmt.Schema.FieldsByDBName[dbName]
 				if !field.IgnoreMigration {
@@ -142,20 +144,25 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 						if err != nil {
 							return err
 						}
+
 						pk := fmt.Sprintf("? ? DEFAULT nextval('%s')", sequenceName)
 						createTableSQLSb146.WriteString(pk)
 					} else {
 						createTableSQLSb146.WriteString("? ?")
 					}
+
 					hasPrimaryKeyInDataType = hasPrimaryKeyInDataType || strings.Contains(strings.ToUpper(m.DataTypeOf(field)), "PRIMARY KEY")
 					values = append(values, clause.Column{Name: dbName}, m.DB.Migrator().FullDataTypeOf(field))
+
 					createTableSQLSb146.WriteString(",")
 				}
 			}
+
 			createTableSQL += createTableSQLSb146.String()
 
 			if !hasPrimaryKeyInDataType && len(stmt.Schema.PrimaryFields) > 0 {
 				createTableSQL += "PRIMARY KEY ?,"
+
 				primaryKeys := make([]any, 0, len(stmt.Schema.PrimaryFields))
 				for _, field := range stmt.Schema.PrimaryFields {
 					primaryKeys = append(primaryKeys, clause.Column{Name: field.DBName})
@@ -165,6 +172,7 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 			}
 
 			var createTableSQLSb174 strings.Builder
+
 			for _, idx := range stmt.Schema.ParseIndexes() {
 				if m.CreateIndexAfterCreateTable {
 					defer func(value any, name string) {
@@ -176,10 +184,11 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					if idx.Class != "" {
 						createTableSQLSb174.WriteString(idx.Class + " ")
 					}
+
 					createTableSQLSb174.WriteString("INDEX ? ?")
 
 					if idx.Comment != "" {
-						createTableSQLSb174.WriteString(fmt.Sprintf(" COMMENT '%s'", idx.Comment))
+						fmt.Fprintf(&createTableSQLSb174, " COMMENT '%s'", idx.Comment)
 					}
 
 					if idx.Option != "" {
@@ -187,40 +196,50 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					}
 
 					createTableSQLSb174.WriteString(",")
+
 					values = append(values, clause.Column{Name: idx.Name}, tx.Migrator().(BuildIndexOptionsInterface).BuildIndexOptions(idx.Fields, stmt))
 				}
 			}
+
 			createTableSQL += createTableSQLSb174.String()
 
 			if !m.DB.DisableForeignKeyConstraintWhenMigrating && !m.DB.IgnoreRelationshipsWhenMigrating {
 				var createTableSQLSb201 strings.Builder
+
 				for _, rel := range stmt.Schema.Relationships.Relations {
 					if rel.Field.IgnoreMigration {
 						continue
 					}
+
 					if constraint := rel.ParseConstraint(); constraint != nil {
 						if constraint.Schema == stmt.Schema {
 							sql, vars := constraint.Build()
 							createTableSQLSb201.WriteString(sql + ",")
+
 							values = append(values, vars...)
 						}
 					}
 				}
+
 				createTableSQL += createTableSQLSb201.String()
 			}
 
 			var createTableSQLSb215 strings.Builder
 			for _, uni := range stmt.Schema.ParseUniqueConstraints() {
 				createTableSQLSb215.WriteString("CONSTRAINT ? UNIQUE (?),")
+
 				values = append(values, clause.Column{Name: uni.Name}, clause.Expr{SQL: stmt.Quote(uni.Field.DBName)})
 			}
+
 			createTableSQL += createTableSQLSb215.String()
 
 			var createTableSQLSb220 strings.Builder
 			for _, chk := range stmt.Schema.ParseCheckConstraints() {
 				createTableSQLSb220.WriteString("CONSTRAINT ? CHECK (?),")
+
 				values = append(values, clause.Column{Name: chk.Name}, clause.Expr{SQL: chk.Constraint})
 			}
+
 			createTableSQL += createTableSQLSb220.String()
 
 			createTableSQL = strings.TrimSuffix(createTableSQL, ",")
@@ -232,6 +251,7 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 			}
 
 			err = tx.Exec(createTableSQL, values...).Error
+
 			return err
 		}); err != nil {
 			return err
@@ -253,6 +273,7 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					}
 				}
 			}
+
 			return nil
 		}); err != nil {
 			return err
@@ -266,8 +287,8 @@ func (m Migrator) DropTable(values ...any) error {
 	values = m.ReorderModels(values, false)
 
 	tx := m.DB.Session(&gorm.Session{})
-	for i := len(values) - 1; i >= 0; i-- {
-		if err := m.RunWithValue(values[i], func(stmt *gorm.Statement) error {
+	for _, value := range slices.Backward(values) {
+		if err := m.RunWithValue(value, func(stmt *gorm.Statement) error {
 			return tx.Exec("DROP TABLE IF EXISTS ? CASCADE", m.CurrentTable(stmt)).Error
 		}); err != nil {
 			return err
@@ -396,6 +417,7 @@ func (m Migrator) MigrateColumn(value any, field *schema.Field, columnType gorm.
 					if dialector, ok := m.DB.Dialector.(Dialector); ok {
 						return dialector.Explain("$1", field.Comment)
 					}
+
 					return "?"
 				}()),
 			).Error; err != nil {
