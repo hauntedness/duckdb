@@ -24,11 +24,13 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
-	duckdb "github.com/hauntedness/duckdb"
+	duckdbv2 "github.com/duckdb/duckdb-go/v2"
+	"github.com/hauntedness/duckdb"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+var _ duckdbv2.Driver
 
 // Define test structs.
 type User struct {
