@@ -35,7 +35,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-// import duckdb explicitly
+// import duckdb explicitly.
 var _ duckdb.Driver
 
 const DriverName = "duckdb"
@@ -89,26 +89,30 @@ func (dialector Dialector) Initialize(db *gorm.DB) (err error) {
 				_ = closer.Close()
 			}
 		}
+
 		return err
 	}
 
 	maps.Copy(db.ClauseBuilders, dialector.ClauseBuilders())
 
-	return
+	return err
 }
 
+//nolint:errcheck,gosec
 func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 	return map[string]clause.ClauseBuilder{
 		"INSERT": func(c clause.Clause, builder clause.Builder) {
 			if insert, ok := c.Expression.(clause.Insert); ok {
 				if stmt, ok := builder.(*gorm.Statement); ok {
-					_, _ = stmt.WriteString("INSERT ")
+					stmt.WriteString("INSERT ")
+
 					if insert.Modifier != "" {
-						_, _ = stmt.WriteString(insert.Modifier)
-						_ = stmt.WriteByte(' ')
+						stmt.WriteString(insert.Modifier)
+						stmt.WriteByte(' ')
 					}
 
-					_, _ = stmt.WriteString("INTO ")
+					stmt.WriteString("INTO ")
+
 					if insert.Table.Name == "" {
 						stmt.WriteQuoted(stmt.Table)
 					} else {
@@ -123,16 +127,16 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 		},
 		"RETURNING": func(c clause.Clause, builder clause.Builder) {
 			if returning, ok := c.Expression.(clause.Returning); ok {
-				_, _ = builder.WriteString("RETURNING ")
+				builder.WriteString("RETURNING ")
 
 				if len(returning.Columns) == 0 {
-					_ = builder.WriteByte('*')
+					builder.WriteByte('*')
 					return
 				}
 
 				for idx, column := range returning.Columns {
 					if idx > 0 {
-						_ = builder.WriteByte(',')
+						builder.WriteByte(',')
 					}
 
 					builder.WriteQuoted(column)
@@ -142,16 +146,17 @@ func (dialector Dialector) ClauseBuilders() map[string]clause.ClauseBuilder {
 		"LIMIT": func(c clause.Clause, builder clause.Builder) {
 			if limit, ok := c.Expression.(clause.Limit); ok {
 				if limit.Limit != nil && *limit.Limit >= 0 {
-					_, _ = builder.WriteString("LIMIT ")
-					_, _ = builder.WriteString(strconv.Itoa(*limit.Limit))
+					builder.WriteString("LIMIT ")
+					builder.WriteString(strconv.Itoa(*limit.Limit))
 				}
 
 				if limit.Offset > 0 {
 					if limit.Limit != nil && *limit.Limit >= 0 {
-						_ = builder.WriteByte(' ')
+						builder.WriteByte(' ')
 					}
-					_, _ = builder.WriteString("OFFSET ")
-					_, _ = builder.WriteString(strconv.Itoa(limit.Offset))
+
+					builder.WriteString("OFFSET ")
+					builder.WriteString(strconv.Itoa(limit.Offset))
 				}
 			}
 		},
@@ -265,6 +270,7 @@ func (dialector Dialector) BindVarTo(writer clause.Writer, stmt *gorm.Statement,
 	_ = writer.WriteByte('?')
 }
 
+//nolint:errcheck,gosec
 func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 	var (
 		underQuoted, selfQuoted bool
@@ -277,7 +283,8 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 		case '"', '`':
 			continuousQuotes++
 			if continuousQuotes == 2 {
-				_ = writer.WriteByte('"')
+				writer.WriteByte('"')
+
 				continuousQuotes = 0
 			}
 		case '.':
@@ -285,15 +292,17 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 				shiftDelimiter = 0
 				underQuoted = false
 				continuousQuotes = 0
-				_ = writer.WriteByte('"')
+
+				writer.WriteByte('"')
 			}
 
-			_ = writer.WriteByte(v)
+			writer.WriteByte(v)
 
 			continue
 		default:
 			if shiftDelimiter-continuousQuotes <= 0 && !underQuoted {
-				_ = writer.WriteByte('"')
+				writer.WriteByte('"')
+
 				underQuoted = true
 
 				if selfQuoted = continuousQuotes > 0; selfQuoted {
@@ -302,20 +311,20 @@ func (dialector Dialector) QuoteTo(writer clause.Writer, str string) {
 			}
 
 			for ; continuousQuotes > 0; continuousQuotes -= 1 {
-				_ = writer.WriteByte('"')
+				writer.WriteByte('"')
 			}
 
-			_ = writer.WriteByte(v)
+			writer.WriteByte(v)
 		}
 
 		shiftDelimiter++
 	}
 
 	if continuousQuotes > 0 && !selfQuoted {
-		_ = writer.WriteByte('"')
+		writer.WriteByte('"')
 	}
 
-	_ = writer.WriteByte('"')
+	writer.WriteByte('"')
 }
 
 func (dialector Dialector) Explain(sql string, vars ...any) string {

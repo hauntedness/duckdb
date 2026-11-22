@@ -116,6 +116,7 @@ func (m Migrator) createSequence(values ...any) error {
 	return nil
 }
 
+//nolint:all
 func (m Migrator) CreateTable(values ...any) (err error) {
 	if err := m.createSequence(values...); err != nil {
 		return err
@@ -182,7 +183,8 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					}(value, idx.Name)
 				} else {
 					if idx.Class != "" {
-						createTableSQLSb174.WriteString(idx.Class + " ")
+						createTableSQLSb174.WriteString(idx.Class)
+						createTableSQLSb174.WriteByte(' ')
 					}
 
 					createTableSQLSb174.WriteString("INDEX ? ?")
@@ -192,7 +194,8 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					}
 
 					if idx.Option != "" {
-						createTableSQLSb174.WriteString(" " + idx.Option)
+						createTableSQLSb174.WriteByte(' ')
+						createTableSQLSb174.WriteString(idx.Option)
 					}
 
 					createTableSQLSb174.WriteString(",")
@@ -214,7 +217,8 @@ func (m Migrator) CreateTable(values ...any) (err error) {
 					if constraint := rel.ParseConstraint(); constraint != nil {
 						if constraint.Schema == stmt.Schema {
 							sql, vars := constraint.Build()
-							createTableSQLSb201.WriteString(sql + ",")
+							createTableSQLSb201.WriteString(sql)
+							createTableSQLSb201.WriteByte(',')
 
 							values = append(values, vars...)
 						}
@@ -364,7 +368,7 @@ func (m Migrator) GetTables() (tableList []string, err error) {
 	return tableList, m.DB.Raw("SELECT table_name FROM information_schema.tables WHERE table_schema = ? AND table_type = ?", currentSchema, "BASE TABLE").Scan(&tableList).Error
 }
 
-// Columns.
+// DropColumn support.
 func (m Migrator) DropColumn(dst any, field string) error {
 	if err := m.Migrator.DropColumn(dst, field); err != nil {
 		return err
@@ -464,7 +468,7 @@ func (m Migrator) RenameColumn(dst any, oldName, field string) error {
 // TODO: Implement below function.
 // func (m Migrator) ColumnTypes(value interface{}) (columnTypes []gorm.ColumnType, err error)
 
-// Views.
+// CreateView CreateView.
 func (m Migrator) CreateView(name string, option gorm.ViewOption) error {
 	return ErrDuckDBNotSupported
 }
@@ -499,7 +503,7 @@ func (m Migrator) HasConstraint(value any, name string) bool {
 	return count > 0
 }
 
-// https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
+// DropConstraint https://duckdb.org/docs/sql/statements/alter_table.html#add--drop-constraint
 func (m Migrator) DropConstraint(dst any, name string) error {
 	return ErrDuckDBNotSupported
 }
@@ -507,8 +511,7 @@ func (m Migrator) DropConstraint(dst any, name string) error {
 // TODO: Implement below function.
 // func (m Migrator) CreateConstraint(value interface{}, name string) error {}
 
-// Indexes
-
+// CreateIndex Indexes.
 func (m Migrator) CreateIndex(value any, name string) error {
 	return m.RunWithValue(value, func(stmt *gorm.Statement) error {
 		if stmt.Schema != nil {

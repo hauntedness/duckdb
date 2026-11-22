@@ -351,6 +351,7 @@ func TestQuoteTo(t *testing.T) {
 	for _, tc := range tests {
 		var sb strings.Builder
 		dialector.QuoteTo(&sb, tc.input)
+
 		if sb.String() != tc.expected {
 			t.Errorf("QuoteTo(%q) = %q, want %q", tc.input, sb.String(), tc.expected)
 		}
